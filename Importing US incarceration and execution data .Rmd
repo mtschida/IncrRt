@@ -1,0 +1,599 @@
+---
+title: "Importing US incarceration and execution data"
+author: "Michelle Tschida"
+date: "March 2015"
+output:
+  html_document:
+    toc: true
+---
+#Crime Data Load 1
+
+This set of code imports and cleans the crime data.
+
+
+Set this to your working directory.  Some data files are needed in the '/data/' folder.
+
+```{r}
+# change to your working directory
+
+setwd("C:/Users/michelle/Dropbox/IncarcerationRates/IncrRt")
+
+```
+   
+```{r including packages, echo = FALSE, include=FALSE}  
+
+#install.packages("wesanderson")
+#install.packages("Rtools")
+#find_rtools()
+# load R tools for old versions here http://cran.r-project.org/bin/windows/Rtools/
+#install.packages("rJava")
+
+
+packages = c("ggplot2", "dplyr", "reshape2","xlsx","wesanderson",
+             "magrittr","stringr", "pander","rJava","xlsxjars","StCrmMLT")
+
+
+lapply(packages, library, character.only = TRUE)
+
+```
+
+
+#Downloading state information from the US Census Quick facts and the state data set from R.    
+This will be general demographic data to consider in our analysis.  
+
+The US Census Quick Facts can be found @  http://quickfacts.census.gov/qfd/download_data.html.   
+  
+The state data sets comes with R and is part of the data sets package.    
+
+>Some data sets from this piece of code are:  
+* qf_dd, #quick facts data dictionary  
+* qf_fips, # quick facts state and county fips  
+* st_fips, #State FIPS CODES  
+* cns_qf , #US Census Quick Facts  
+* cns_qf_state #US Census Quick Facts just for a state  
+* StateDemo, #state info from the state() data set   
+
+  
+
+```{r downloading Census Quick Facts and state information, echo=TRUE}
+
+#All Census data from this website:
+#http://quickfacts.census.gov/qfd/download_data.html  
+
+# US Census Quick Facts data dictionary 
+url_dd <- "http://quickfacts.census.gov/qfd/download/DataDict.txt"   
+
+#reading in a file with fixed widths and headders
+qf_dd <- read.fwf(url_dd, widths=c(10,88,5,4,14,8,9,10) ,strip.white=TRUE,
+                  header=FALSE, skip=2, 
+                  col.names=c("Data_Item","Item_Description","Unit", "Decimal","US_Total","Minimum",
+                 "Maximum","Source") ) #2010 Census Data Dictionary
+
+
+#US Census FISP Codes at the state and county level.  
+
+url_fisp <- "http://quickfacts.census.gov/qfd/download/FIPS_CountyName.txt"   
+# FIPS Codes
+
+qf_fips<- read.fwf(url_fisp,header=FALSE, skip=1,
+              widths=c(6,50) ,strip.white=TRUE, col.names=c("FIPS", "County.Name"))
+
+# http://stackoverflow.com/questions/9934856/removing-non-ascii-characters-from-data-files
+qf_fips$County.Name <- iconv(qf_fips$County.Name, "latin1", "ASCII", sub="")
+
+
+
+sn <- c(state.name,"District of Columbia","District of Columbia, DC")
+
+qf_fips$state.name.lower <- tolower(qf_fips$County.Name)
+
+lower_c <- as.data.frame(c(as.data.frame(sn),as.data.frame(tolower(sn))))
+
+names(lower_c)<- c("state.name","state.name.lower")
+
+#State FIPS CODES
+st_fips <- merge(x=qf_fips,y=lower_c, by.x="state.name.lower", by.y="state.name.lower") 
+names(st_fips$County.Name) <- "state.name.upper"
+
+
+#Census Quick Facts - for all states and counties
+
+url_qf <- "http://quickfacts.census.gov/qfd/download/DataSet.txt"  
+# US Census quickfacts.  3195 rows, one for the U.S., one for each state, one for each county.
+
+cns_qf <- read.csv(file=url_qf)
+
+#Inner join to get Census Quick Facts for State 
+cns_qf_state  <- merge(x=cns_qf,y=st_fips, by.x="fips", by.y="FIPS") 
+
+
+#State Information
+state_info <- as.data.frame(cbind(state.name,as.character(state.division),
+                                  as.character(state.region), state.abb, state.x77))
+
+names(state_info)[names(state_info)=="Life Exp"]  <- "LifeExp"
+names(state_info)[names(state_info)=="HS Grad"]  <- "HSGrad"
+
+state_info$Population<- as.numeric(state_info$Population)
+state_info$Income<- as.numeric(state_info$Income)
+state_info$Illiteracy<- as.numeric(state_info$Illiteracy )
+state_info$LifeExp<- as.numeric(state_info$LifeExp )
+state_info$Murder<- as.numeric(state_info$Murder)
+state_info$HSGrad<- as.numeric(state_info$HSGrad)
+state_info$Frost<- as.numeric(state_info$Frost )
+state_info$Area <- as.numeric(state_info$Area)
+
+names(state_info)[names(state_info)=="V2"] <- "state.division"
+names(state_info)[names(state_info)=="V3"] <-"state.region"
+
+# state_info #state info from the state() data set 
+
+
+#mergine state info from R data files withfips
+st_info_fips <- merge(st_fips,state_info,all=TRUE)
+
+
+# merging state info and fips with censue information
+names(cns_qf_state)[names(cns_qf_state)=="fips"]<-"FIPS"
+
+StateDemo <- merge(st_info_fips ,cns_qf_state,all=TRUE)
+names(StateDemo)[names(StateDemo)=="V2"] <- "state.division"
+names(StateDemo )[names(StateDemo )=="V3"] <-"state.region"
+names(StateDemo)
+
+```
+
+
+
+  
+# Importing total yearly executions for the US and by state for years 1977 to 2014.    
+
+This was obtained from http://www.bjs.gov/content/dtdata.cfm#State/  
+
+
+
+```{r importing and cleaning execution data, echo=TRUE}
+
+
+#'@title ExecData
+#'@description A function to import and clean US capitol punishment 
+#'@description  Importing and cleaning US capitol punishment total by year and state. 
+#'@details This function melts the years into one column and makes a column for 'executions'.  This gives the total number of prisoners executed under civil authority in the United States, by year, region, and jurisdiction, 1977-2014.
+#'@details Executions is the total number of executions for that year
+#' 
+#' The data can be found at  "http://www.bjs.gov/content/data/exest.csv".
+#'@param f1 is the file to be read.
+#'@param skip1 is the number of rows to skip
+#'@param nrows1 is the number of rows to read 
+#'@param ... any additional field
+#'@return returns a data frame
+#'@author Michelle Tschida
+#'@export
+
+ExecData <- function(f1= "http://www.bjs.gov/content/data/exest.csv", skip1=10, nrows1=64,...){
+
+
+#reading the csv file from the web
+exe <- read.csv(file=f1 , skip=skip1, nrows=nrows1, sep=",",check.names=TRUE,
+                header=TRUE, blank.lines.skip=TRUE,strip.white=TRUE)
+
+# A list of all of the states in the state.name file plus District of columbia  
+StateList <- c(state.name,"District of Columbia")
+
+names(exe)[names(exe)=="Region.and.jurisdiction"] <- "Jurisdiction" #naming the 1st column "Jurisdiction"
+
+exe$Jurisdiction <- gsub(x=exe$Jurisdiction, pattern="Dist. of Col.",replacement="District of Columbia")
+# replacing 'Dist. of col. with District of Columbia
+
+exe <- exe[-(nrow(exe)),] # removing the last 2 lines
+exe <- exe[-(nrow(exe)),]  # removing the last 2 lines
+exe <- exe[!(is.na(exe$X1977)),] #removing blank lines
+exe$Total <-as.numeric(gsub(",","", exe$Total)) # making total executions numeric
+
+
+# lableing descriptions to be state, US or region.
+exe$desc[exe$Jurisdiction %in% c("U.S. total","Federal","State")] <- "US"
+exe$desc[exe$Jurisdiction %in% c("Northeast","Midwest", "South","West")] <- "region"
+exe$desc[which(exe$Jurisdiction %in% StateList)] <- "state"
+
+#Reshaping the data 
+exe1 <- reshape2::melt(data=exe,id=c("Jurisdiction","desc"),variable.name="year",value.name= "executions")
+
+#making years more readable
+exe1$year <- gsub(pattern="X",replacement="",exe1$year)
+exe1$year<-gsub(pattern="Total",replacement="1977 - 2014",exe1$year)  
+  # Changing Total to the years involved just as a reminder
+
+exe1$executions <- as.numeric(exe1$executions) #making executions numeric
+
+out<- exe1
+
+return(out)
+
+}
+# end of exection data function()
+ 
+  
+exe <- ExecData()
+
+# Executions by year
+# Splitting up the yearly data into state  and US
+ExecByYear <-exe %>% filter(year %in% (1977:2014))     %>% 
+      filter(desc=="state" | Jurisdiction=="U.S. total" ) 
+ExecByYear$year <- as.numeric(ExecByYear$year)
+
+ ExecByYear_us  <-ExecByYear   %>% filter(Jurisdiction=="U.S. total")
+ExecByYear_state <-ExecByYear %>% filter(desc=="state") 
+ 
+
+# Total Executions - years rolled up for state and US
+
+ExecTotal <- exe %>% filter((year=="1977 - 2014"))   %>% filter(desc=="state"  | Jurisdiction=="U.S. total")
+ ExecTotal_us  <- exe %>% filter((year=="1977 - 2014"))   %>% filter(Jurisdiction=="U.S. total")
+ ExecTotal_state  <- exe %>% filter((year=="1977 - 2014"))   %>% filter(desc=="state")
+
+
+```
+
+### Exploring execution data.    
+
+Texas has the most executions.  Many states have 0 executions.  Executions in the US peaked around the year 2000.     
+
+
+```{r execution graphs, fig.width=7, fig.height=5}
+#install.packages("ggplot2")
+library(ggplot2)
+
+#par(mfrow=c(2,2))
+
+
+ ggplot2::ggplot(data=ExecByYear_us, aes(x=year, y=executions) )+
+ ggplot2::theme_bw() + 
+  ggplot2::theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black")
+        ) +
+    ggplot2::geom_point()+
+  ggplot2::stat_smooth(se=FALSE, method="loess") +
+  ggplot2::xlab("Year") +
+  ggplot2::ylab("Total # of Executions")+
+  ggplot2::ggtitle("Prisoners executed in the United States by year \n from 1977 to 2014")
+# warnings()
+# to plot by state
+#ggplot(data=ExecByYear_state[ExecTotal_state$executions>=75,], aes(x=year, y=executions, group=Jurisdiction, color=Jurisdiction) )  +
+
+
+
+ggplot2::ggplot(data=ExecByYear_state[ExecTotal_state$executions >=75,], aes(x=Jurisdiction, y=executions, 
+      fill=factor(Jurisdiction) ))  +
+ ggplot2::theme_bw() + 
+  ggplot2::geom_bar(stat="identity",aes(x=reorder(Jurisdiction,desc(executions))))+
+  ggplot2::theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black")
+        )+
+  ggplot2::scale_color_manual(values = wesanderson::wes_palette("Rushmore")) +
+  ggplot2::xlab("State") +
+  ggplot2::ylab("Total Executions 1977- 2014") +
+  ggplot2::ggtitle("States with the highest total executions \n from 1977 to 2014")
+
+
+#table(ExecTotal_state$executions)
+
+#str(ExecTotal_state$executions)
+
+ExecTotal_state$executions_cut <- cut(ExecTotal_state$executions, 
+          breaks=c(-Inf,0,10,40,150,Inf),
+          labels=c("0","1-10","11-40","41-150", ">150" ))
+
+#table(ExecTotal_state$executions_cut)
+
+ggplot2::ggplot(data=ExecTotal_state, aes(x=ExecTotal_state$executions_cut,
+                                 fill=factor(ExecTotal_state$executions_cut)) )  +   
+  ggplot2::theme_bw() + 
+   ggplot2::geom_bar(stat="bin")+
+
+  ggplot2::theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black")
+        )+
+  ggplot2::scale_color_manual(values = wesanderson::wes_palette("Rushmore")) +
+  ggplot2::xlab("Total Executions for a state from 1977- 2014") +
+  ggplot2::ylab("Number of States") +
+  ggplot2::ggtitle("# of States bucketed by total executions \n from 1977 to 2014")
+ExecTotal_state$executions_cut <- NULL
+#par(mfrow=c(1,1))
+
+```
+
+#Importing incarceration rates by state 1978 - 2013.  
+
+These stats give incarcerations per 100,000 residents.  
+
+This data can be found @ http://www.bjs.gov/index.cfm?ty=nps under the tab 'Quick Tables'.  
+
+
+````{r getting the data for incarceration rates by state 1978 - 2013, fig.width=7, fig.height=5}
+
+#'@title A function to import and clean incarceration rates by year and state.
+#'@description Incarceration rates are per 100,000 people by state. 
+#' This can be found at http://www.bjs.gov/index.cfm?ty=nps under the tab 'Quick Tables'.
+#'@param file1, sheetIndex1, startRow1 and endRow1 are all parameters (with a 1 attached) from the read.xlsx package
+#'@author Michelle Tschida
+#'@export
+
+IncerData <- function(file1 = "http://www.bjs.gov/nps/resources/documents/QT_imp%20rate_tot.xlsx",
+    sheetIndex1=1, startRow1=10, endRow1 = 64,... ){
+
+# Importing incarceration data
+  
+td <- tempdir()  # create a temporary directory.  irt stands for incarceration rate.
+
+irt = tempfile(tmpdir=td, fileext=".xlsx") # create the placeholder file
+
+download.file(url=file1, destfile=irt, mode="wb") # download into the placeholder file
+  
+ inc <- xlsx::read.xlsx(file=irt, sheetIndex=sheetIndex1,startRow=startRow1, endRow=endRow1)  # reading in the data
+
+# Some data Cleaining
+
+  names(inc)[names(inc)=="NA."] <- "state"
+  
+
+  # moving the Jurisdiction and state names into one column
+  inc$Jurisdiction1[is.na(inc$Jurisdiction)] <-  as.character(inc$state[is.na(inc$Jurisdiction)])
+  
+  inc$Jurisdiction1[!is.na(inc$Jurisdiction)] <-  as.character(inc$Jurisdiction[!is.na(inc$Jurisdiction)])
+  
+  # Adding a state or US, which is the total, to the descrption description
+  inc$desc[is.na(inc$Jurisdiction)] <-  "state"
+  inc$desc[!is.na(inc$Jurisdiction)] <- "US"
+
+
+  
+  # cleaing up variables and getting rid of temp variables
+  inc$Jurisdiction <-  inc$Jurisdiction1
+  inc$state <- NULL
+  inc$Jurisdiction1 <- NULL 
+  
+  #getting special characters out of Jurisdiction '|' means or
+  inc$Jurisdiction <- gsub(inc$Jurisdiction,pattern="/a|/b|/c|/d|/e",replacement="")
+
+
+
+  # getting rid of the -- which stands for missing
+  inc <- as.data.frame(sapply(inc,gsub,pattern="--",replacement=NA)) 
+   
+  # there must be a way to do this in a loop... :)
+
+  inc$X1978<-as.numeric(as.character(inc$X1978))
+  inc$X1979<-as.numeric(as.character(inc$X1979))
+  inc$X1980<-as.numeric(as.character(inc$X1980))
+  inc$X1981<-as.numeric(as.character(inc$X1981))
+  inc$X1982<-as.numeric(as.character(inc$X1982))
+  inc$X1983<-as.numeric(as.character(inc$X1983))
+  inc$X1984<-as.numeric(as.character(inc$X1984))
+  inc$X1985<-as.numeric(as.character(inc$X1985))
+  inc$X1986<-as.numeric(as.character(inc$X1986))
+  inc$X1987<-as.numeric(as.character(inc$X1987))
+  inc$X1988<-as.numeric(as.character(inc$X1988))
+  inc$X1989<-as.numeric(as.character(inc$X1989))
+  inc$X1990<-as.numeric(as.character(inc$X1990))
+  inc$X1991<-as.numeric(as.character(inc$X1991))
+  inc$X1992<-as.numeric(as.character(inc$X1992))
+  inc$X1993<-as.numeric(as.character(inc$X1993))
+  inc$X1994<-as.numeric(as.character(inc$X1994))
+  inc$X1995<-as.numeric(as.character(inc$X1995))
+  inc$X1996<-as.numeric(as.character(inc$X1996))
+  inc$X1997<-as.numeric(as.character(inc$X1997))
+  inc$X1998<-as.numeric(as.character(inc$X1998))
+  inc$X1999<-as.numeric(as.character(inc$X1999))
+  inc$X2000<-as.numeric(as.character(inc$X2000))
+  inc$X2001<-as.numeric(as.character(inc$X2001))
+  inc$X2002<-as.numeric(as.character(inc$X2002))
+  inc$X2003<-as.numeric(as.character(inc$X2003))
+  inc$X2004<-as.numeric(as.character(inc$X2004))
+  inc$X2005<-as.numeric(as.character(inc$X2005))
+  inc$X2006<-as.numeric(as.character(inc$X2006))
+  inc$X2007<-as.numeric(as.character(inc$X2007))
+  inc$X2008<-as.numeric(as.character(inc$X2008))
+  inc$X2009<-as.numeric(as.character(inc$X2009))
+  inc$X2010<-as.numeric(as.character(inc$X2010))
+  inc$X2011<-as.numeric(as.character(inc$X2011))
+  inc$X2012<-as.numeric(as.character(inc$X2012))
+  inc$X2013<-as.numeric(as.character(inc$X2013))
+
+  # Re-arrange the data
+  inc2 <- reshape2::melt(data=inc,id.vars=c("Jurisdiction","desc"),value.name="IncrRt",variable.name="year")
+  
+  inc2$year <- gsub(pattern="X",replacement="",x=inc2$year)  # getting rid of the X in front of year
+  inc2$year <- as.numeric(inc2$year) #make year numeric
+  
+  out <- inc2
+  return(out)
+  }
+
+
+IncrRt <- IncerData()
+
+hist(IncrRt$IncrRt, main="Incarceration Rates")
+
+````
+
+### Exploring incarceration rates 
+Incarceration rates rose from the 1980's to the year 20000 and then remained fairly constant.  
+
+
+```{r, exploring incarceration rates, fig.width=7, fig.height=5}
+#head(IncrRt)
+#str(IncrRt)
+
+#unique(IncrRt$Jurisdiction)
+
+plot(x=IncrRt$year[IncrRt$Jurisdiction=="U.S. total"],
+     y=IncrRt$IncrRt[IncrRt$Jurisdiction=="U.S. total"],
+     xlab="year",
+     ylab="incarceration rates",
+     main="US incarceration rates by year")
+
+
+Incr_avg <- aggregate(x=IncrRt$IncrRt, by =list(IncrRt$Jurisdiction), FUN=mean,na.rm=TRUE)
+names(Incr_avg)<- c("Jurisdition","AvgIncrRt")
+
+Incr_avg <- Incr_avg[order(Incr_avg$AvgIncrRt),]
+
+
+
+```
+
+
+# Importing estimated crime rates by state and year.  
+
+This data can be found by using the tools at http://www.bjs.gov/ucrdata/Search/Crime/State/RunCrimeStatebyState.cfm  
+
+
+```{r importing estimated crime rates}
+# Importing and cleaning estimated crime rates by state and year
+#This data can be found by using the tools @ http://www.bjs.gov/ucrdata/Search/Crime/State/RunCrimeStatebyState.cfm  
+# I downloaded this to my hard drive , cleaned it a bit then imported it.
+
+
+
+
+EstCrime <- read.csv(file="data/CrimeStatByState_mt.csv",
+      sep=",",header=TRUE, blank.lines.skip=TRUE,strip.white=TRUE,check.names=TRUE,
+     fill=TRUE,colClasses=c("character",rep("numeric",20)))
+
+EstCrime$State <- as.factor(EstCrime$State)
+
+#head(EstCrime,2)
+#str(EstCrime)
+
+```
+
+
+#Combining data sets  
+
+Combining Crime Estimate Data to make the CrmYrUS data set.
+This is Incarceration rates , executions and crime estimates for the TOTAL U.S. by year.  
+
+
+```{r, putting it all together, eval=TRUE, include=TRUE}
+
+# IncrRt is Incarceration rates by year
+# ExecByYear_us is the executions by year for the entire us
+# us by year  - Incarceration rates and executions
+IE_yr_us <- merge(IncrRt[IncrRt$Jurisdiction=="U.S. total" ,],ExecByYear_us)
+IE_yr_us$desc <-NULL
+# Adding in crime estimates by year, which is the EstCrime data set
+#EstCrime  # Estimated Crime by State by year.
+temp <- EstCrime[EstCrime$State=="U.S. total",c(1:3,13:21)]
+names(temp)[names(temp)=="State"] <-"Jurisdiction"
+names(temp)[names(temp)=="Year"] <-"year"
+
+
+#Inner join, of Incarceration rates, execution totals and crime estimate, so some years will be sacrificed
+#### Final Data Set :  Incarceration rates , executions and crime estimates for the total us by year
+CrmYrUS <- merge(IE_yr_us,temp)
+```
+
+
+Combining Crime Estimate Data to make the CrmYrSt  data set. 
+This is incarceration rates , executions and crime estimates by STATE BY YEAR. 
+
+```{r}
+# Incarceration rates and executions by year by state, inner join
+IE_yr_st <- merge(IncrRt[IncrRt$desc=="state" ,],ExecByYear_state)
+IE_yr_st$desc <-NULL
+names(IE_yr_st)[names(IE_yr_st)=="Jurisdiction" ] <- "State"
+
+
+# Adding in estimated crimes by year.  ONly keeping rates, not the totals.
+#EstCrime  # Estimated Crime by State by year.
+temp2 <- EstCrime[!EstCrime$State=="U.S. total",c(1:3,13:21)]
+
+names(temp2)[names(temp2)=="Year"] <-"year"
+
+# Inner join, of Incarceration rates, execution totals and crime estimate, so some years will be sacrificed
+####  Incarceration rates , executions and crime estimates by state by year
+CrmYrSt <- merge(IE_yr_st,temp2)
+
+
+```
+
+Combining crime data by state and year with the demographic data. 
+This makes the  CrmYrSt_wDemo data set.  
+
+```{r}
+# StateDemo, State Demographics from the R state data files and the Us Census Bureau Quick Facts
+    
+# Incarcaeration rates, Execution totals, Estimated Crime by year 
+#  along with state deomgraphics from the Us Census Bureau Quick Facts.  
+#  The quick facts was just one file in time.  
+#  So, the data will be the same within a state, even as years vary.
+
+
+CrmYrSt_wDemo <- merge(CrmYrSt,StateDemo, by.x="State",by.y="state.name",all.x=TRUE,all.y=FALSE)
+
+#names(CrmYrSr_wDemo)
+
+#Some other good data sets note used:
+#qf_fips, # quick facts state and county fips  
+#cns_qf , #US Census Quick Facts  
+
+```
+
+
+## The Final data sets:  
+
+
+```{r CleanUP, echo=FALSE}
+
+# changing the some names to be in line with google docs naming suggestions
+#  http://google-styleguide.googlecode.com/svn/trunk/Rguide.xml#identifiers
+
+#changling column names to lower case
+colnames(CrmYrSt_wDemo) <- tolower(colnames(CrmYrSt_wDemo))
+colnames(CrmYrUS) <- tolower(colnames(CrmYrUS))
+colnames(qf_dd) <- tolower(colnames(qf_dd))
+colnames(CrmYrSt) <- tolower(colnames(CrmYrSt))
+colnames(StateDemo) <- tolower(colnames(StateDemo))
+qf_dd$data_item.lower <- tolower(qf_dd$data_item) #making all data items lower to line up with column names
+
+
+#Take out the following, because its redundant and not as accurate
+CrmYrSt_wDemo <- (subset(CrmYrSt_wDemo,select= -c(population.y)))
+# now can remove the x from population
+names(CrmYrSt_wDemo)[names(CrmYrSt_wDemo)=="population.x"]<- "population"
+
+```
+
+
+```{r save.data, echo=FALSE}
+save(CrmYrUS,file="data/CrmYrUS.robj")
+save(CrmYrSt,file="data/CrmYrSt.robj")
+save(StateDemo,file="data/StateDemo.robj")
+save(CrmYrSt_wDemo,file="data/CrmYrSt_wDemo.robj")
+save(qf_dd,file="data/qf_dd.robj")
+
+```
+   
+
+* __'CrmYrUS':__
+CrmYrUS contains incarceration rates , executions and crime estimates for the total U.S. by year.  
+
+* __'CrmYrSt_wDemo':__
+CrmYrSt_wDemo contains incarceration rates, execution totals and estimated crime statistics by year and state from 1978 to 2012.  It also contains state demographics from the U.S. Census Bureau Quick Facts from 2010.   This data set is a left join of CrmYrSt and StateDemo.  
+
+    * __'CrmYrSt':__ Incarceration rates , executions and crime estimates by US state by year 
+
+    * __'StateDemo':__ US State Demographics from the R state data files and the Us Census Bureau 2010 Quick facts 
+
+* __'qf_dd':__  U.S. Census Bureau quick facts data dictionary. This gives the definitions and meanings of the fields.
+
+notes: For all data sets:
+District of Columbia was changed to 'District of Columbia'
+The total for the US Population is changed to 'U.S. total'

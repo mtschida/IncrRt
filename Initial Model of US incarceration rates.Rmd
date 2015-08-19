@@ -1,0 +1,1281 @@
+---
+title: "A model of U.S. incarceration rates"
+author: "Michelle Tschida"
+date: "June, 2015"
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document: default
+---
+
+```{r set to your working directory, echo = FALSE}
+
+setwd("C:/Users/michelle/Dropbox/IncarcerationRates/IncrRt")
+#getwd()
+
+```
+
+```{r including.packages, echo = FALSE, include=FALSE, eval=TRUE}  
+
+packages=c("psych","ggplot2","maps","glmnet","MASS","mgcv","gridExtra","grid")
+#packages = c("ggplot2", "dplyr", "reshape2","xlsx","wesanderson", "magrittr","stringr", "pander","rJava","xlsxjars","StCrmMLT","MASS")
+
+
+lapply(packages, library, character.only = TRUE)
+#data()
+
+```
+
+
+
+```{r housekeeping, echo = FALSE, include=FALSE}  
+
+
+load(file="data/CrmYrUS.robj")
+load(file="data/CrmYrSt_wDemo.robj")
+load(file="data/qf_dd.robj")
+
+#removing district of columbia.  Some data is missing and the crime is a very high outlier.
+CrmYrSt_wDemo<- subset(CrmYrSt_wDemo,! CrmYrSt_wDemo$state=="District of Columbia",)
+#unique(CrmYrSt_wDemo$state)
+
+
+```
+
+
+```{r multiplot.function, echo=FALSE}
+# reference = http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/
+
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+
+```
+
+
+#Abstract  
+
+Incarceration rates in the U.S. vary by state and year.  My goal was to build a model to explain the variability  without using state or regional variables as predictors in the model.  The data set included:  U.S. incarceration rates for each state and year from 1978 to 2012, crime rates for each state and year from 1978 to 2012 and state demographics that were a snapshot in time.  The original data set has 80 columns.  The final model explains about 60% of the variation in incarceration rates.  It used an AR(1) time correlation and state as a random variable.  The independent variables in the model are: year, violent crime rate, property crime rate, % of people living below the poverty level and (violent crime rate) * (% living below the poverty level).  
+
+
+#Introduction 
+
+Data was gathered on U.S. incarceration rates.  Within the U.S., there is state to state variability. Some states seem special or different and stand out as being more tough on crime or more lenient.  Texas being a classic example.  I was curious to find out if these states are really different or if they just have a slightly different set of circumstances, such as higher crime rates.   The goal of this exercises was to see how much of the variation in U.S. state incarceration rates could be modeled with the non-regional variables that were on hand. 
+
+Execution totals were gathered as part of the data set.  In depth analysis and modeling was not done.  However, Appendix 5 contains several tables and graphs on execution rates.  
+
+#Materials & Methods 
+
+## Materials & Methods:  The Data  
+
+Three data sets used in this analysis are:  
+
+1.__'CrmYrSt_wDemo':__
+The CrmYrSt_wDemo is the main data set used.  It contains incarceration rates, execution totals and estimated crime statistics by year and state from 1978 to 2012.  It also contains state demographics from the U.S. Census Bureau Quick Facts from 2010.   It has 1750 rows (50 states x 34 years) and 80 columns.  
+
+The 80 columns are listed in Appendix 1.  Here is a summary:  
+* Incarceration rates is the rate per 100,000 people.  
+* Executions total for that state and year.   
+* U.S. census bureau data for each state that is a snapshot in time, mostly around 2010.     
+* The crime rates are based on reported crimes in the U.S. and are considered representative of the crime in the area.  Rates are the number of reported offenses per 100,000 population.      
+* Violent crime and property crime are summaries of the other crime rates.  So, for modeling one can either use the rolled up values or the more detailed crime rates, but not both.    
+      * The violent crime rate is the sum of the  murder and non-negligent manslaughter rate, forcible rape rate, robbery rate, aggravated assault rate.  violent crime rate=  100,000 * (murder and non-negligent manslaughter rate + forcible rape rate + robbery rate + aggravated assault rate)/population  
+      * The property crime rate is the sum of:  burglary rate,larceny theft rate and motor vehicle theft rates.    property crime rate=  100,000 * (burglary rate + larceny theft rate + motor vehicle theft rates)/population   
+
+
+2.__'CrmYrUS':__
+The data set CrmYrUS contains incarceration rates , executions and crime estimates for the total U.S. by year. 
+
+
+3.__'qf_dd':__  This data set is the U.S. Census Bureau quick facts data dictionary. This gives the definitions and meanings of the fields from the U.S Census Bureau, which are cryptic.
+
+  
+The data was scraped from the internet from several sources.     More information about where the data was obtained and how it was combined can be found in the file "Importing U.S. incarceration and execution data".    The web pages the data was scraped from are the following:  
+The US Census Quick Facts: http://quickfacts.census.gov/qfd/download_data.html  
+
+Execution data: http://www.bjs.gov/content/dtdata.cfm#State/  
+
+Incarceration rates: http://www.bjs.gov/index.cfm?ty=nps 
+
+Estimated crime: http://www.bjs.gov/ucrdata/Search/Crime/State/RunCrimeStatebyState.cfm  
+ 
+
+## Materials & Methods:  The Methods. 
+
+
+I prepared the data by doing some transformations and data reduction.  The incarceration rate was skewed, so I transformed it using the natural log. All independent variables that were numbers, except for year, were standardized.  
+
+For the initial model, the independent variables were reduced from 79 to 16 by the following methods:  
+- redundant and highly correlated variables were consolidated, - I tested to find variables that might be dominated by a few outliers  
+- variables were set aside that had a weak relationship with incarceration rate.  
+- I tried step-wise regression and Lasso, but they were unhelpful in reducing the set of independent variables further.    
+ 
+For modeling, I used generalized additive mixed models with incarceration rate as a response and individual states as a random variable. I accounted for temporal auto-correlation with an AR(1) structure. I choose between models based on p-value of the variables, my knowledge of the fields, the AIC, the BIC.   
+
+The packages I used for data preparation are:  stats::cor, psych::pairs.panels,  graphics::hist, ggplot2::ggplot, a function I wrote called get.top.corr.  The mgcv::gamm package was used for modeling.  
+
+#Results
+## Results:  Data Exploration
+
+
+This map is an example of the regional variations for incarceration rate.  Although there are some exceptions, the southern states tend to have higher incarceration rates than many of the northern states.     
+
+```{r map.of.incarceration.rates, echo=FALSE}
+
+IncrRt2000 <- subset(CrmYrSt_wDemo,year==2000,select=c(state.name.lower,incrrt))
+
+
+names(IncrRt2000) <-c("region","incrrt")
+#example(map_data)
+states <- map_data("state")
+choro <- merge(states, IncrRt2000, sort = FALSE, by = "region")
+choro <- choro[order(choro$order), ]
+p_incr <- ggplot2::qplot(long, lat, data = choro, group = group, fill = incrrt,geom = "polygon",main="Incarceration rate by state for year 2000")
+
+# heat map colors compliments of the web
+# http://www.r-bloggers.com/r-defining-your-own-color-schemes-for-heatmaps/
+
+
+red=rgb(1,0,0); green=rgb(0,1,0); blue=rgb(0,0,1); white=rgb(1,1,1)
+
+GtoWrange<-colorRampPalette(c(green, white) )
+WtoRrange<-colorRampPalette(c(white, red ) )
+
+
+p_incr <- p_incr + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=385, high="red")
+
+p_incr
+
+# incarceration rates by year
+
+
+
+#pushViewport(viewport(layout = grid.layout(1, 2)))
+#print(p_incr, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+#print(Incr.yr, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+
+
+```
+
+The plots below show that incarceration rates are skewed and that there is a strong time trend. I used the natural log of the incarceration rate for modeling and many diagnostics.   
+
+
+```{r Incercaration Rates distribution, echo=FALSE, eval=TRUE}
+par(mfrow=c(1,2))
+
+ hist(CrmYrSt_wDemo$incrrt, main="Incarceration rate \n by state and year")
+plot(x=CrmYrUS$year,
+     y=CrmYrUS$incrrt,
+     xlab="year",
+     ylab="Incarceration rates",
+     main="US incarceration rates by year \n from 1978 to 2012")
+
+#hist(log(CrmYrSt_wDemo$incrrt), main="Ln Incarceration rate \n by state and year")
+
+#boxplot(CrmYrSt_wDemo$incrrt, main="Incarceration rate \n by state and year")
+
+#boxplot(log(CrmYrSt_wDemo$incrrt), main="Log Incarceration rate \n by state and year")
+
+par(mfrow=c(1,1))
+
+```
+
+
+  
+
+
+##Results: Reducing columns for initial modeling and data preperation.  
+
+Several tools were used to suggest potential candidates of variables to remove for initial modeling.  When a variable was found by one of these tools, it was investigated and a decision was made to keep or toss the variable.  This helped to reduce the data set from about 79 independent variables to 16 to begin the modeling process.     
+
+#### Removing redundant and highly correlated variables  
+
+My first step in reducing the data set was to take out strongly correlated variables, redundancies and variables that were of no interest to the problem.  This helped reduce the data frame from 80 columns to 47 columns.  A list of the variables taken out is in Appendix 3A (redundant variables), Appendix 3B (variables removed with 95% correlation threshold) and Appendix 3C (variables removed with 85% correlation threshold).
+
+I wrote a function called get.top.corr to help find variables that were highly correlated to each other.  Inputs to get.top.corr are a correlation threshold and a data frame of numeric columns.  The function takes the first column of the data frame and finds all other columns that have a correlation above the threshold.  These names of these variables are put in a group with an identifier, a new data frame is created without these columns, and the process is repeated until data frame has 0 columns.  The grouped variable names are output from the function.   The code for get.top.corr is in Appendix 2.  
+
+
+Example:  Eleven variables were output from get.top.corr that were correlated with population >= 95%.   Population was chosen to represent the other variables because it is yearly data and many of the others are snapshots in time.  These variables are listed in Appendix 3 B.     
+
+
+```{r cor.w.pop, echo=FALSE, eval=FALSE}
+
+c.pop <- subset(CrmYrSt_wDemo, select= c(bza010213, bza110213, hsd410213, hsg010213, nes010212, pop010210, pst040210,pst045213, pst045214, rtn130207, sbo001207 ))
+
+psych::pairs.panels(c.pop, main="Correlation with poplulation \n first group output of get.top.corr ",cex.main=0.6)
+
+
+```
+
+```{r get.top.corr.95pct , echo=FALSE}
+#A function to find an initial list of variables that are highly correlated
+
+#cor.thrsh  is the correlation threshhold
+#c.data.set  is the data set of numeric variables
+
+get.top.corr <-function(cor.thrsh=0.95,c.data.set){
+  ds<- data.frame()
+  
+while(dim(c.data.set)[2]>0){
+cr <- as.data.frame(cor(c.data.set,use="pairwise.complete.obs"))
+nms <- (names(cr)[cr[1]>=abs(cor.thrsh)])
+cor.mtx <- as.data.frame(cbind(nms,names(cr[1]),length(nms),cor.thrsh))
+ds<- rbind(ds,cor.mtx)
+ c.data.set<- subset(c.data.set,select= !names(c.data.set) %in% nms)
+}
+
+names(ds)<-c("name","grp","nvar","cor")
+
+ds2 <- merge(x=ds[! ds$nvar %in% c("1"),],y=qf_dd,by.x="name",by.y="data_item.lower",all.x=TRUE)
+return(ds2)
+}
+
+```
+
+```{r RmvHighlyCorrelatedVars.95, echo=FALSE, eval=FALSE}
+# keeping just the number fields from tbe data set
+# also removing the dependent variables execution rate and executions
+num.only <- (subset(CrmYrSt_wDemo,select= -c(state,year,incrrt,executions,fips,state.name.lower,county.name,state.division,state.region,state.abb)))
+
+# finding variables with a 95% correlation or greater
+x<- get.top.corr(cor.thrsh=0.95,c.data.set=num.only)
+#head(x)
+#write.csv(x,"var.corr.CrmYrSt_wDemo.csv")
+
+
+#removing 16 fields with correlation > 95%
+#The fieldsd are:  bza010213,   bza110213, 	hsd410213, 	hsg010213, 	nes010212, 	pop010210, 	pst040210, 	pst045213, 	pst045214, 	rtn130207, 	sbo001207, 	pst120214, 	sbo315207, 	sbo215207, 	rhi625213, 	sbo515207, 
+
+
+#Remove these R fields that are redundant: Income, Murder, HSGrad, Area  
+# I also removed frost because I felt like this would be too highly correlated with the southern states.
+# Removing some state info.  We can always add it back in later.  ,fips,state.name.lower,county.name,state.division,state.region,
+```
+
+
+
+```{r get.top.corr.80pct, eval=FALSE, echo=FALSE}
+#looking at 80% correlatoins of the state variables
+x2<- get.top.corr(cor.thrsh=0.80,c.data.set=(subset(CrmYrSt_wDemo,select= c(illiteracy, 	lifeexp, 	 	pst120213, 	age135213, 	age295213, 	age775213, 	sex255213, 	rhi125213, 	rhi225213, 	rhi325213, 	rhi425213, 	rhi525213, 	rhi725213, 	pop715213, 	pop645213, 	pop815213, 	edu635213, 	edu685213, 	vet605213, 	lfe305213, 	hsg445213, 	hsg096213, 	hsg495213, 	hsd310213, 	inc910213, 	inc110213, 	pvy020213, 	bza115213, 	sbo115207, 	sbo415207, 	sbo015207, 	man450207, 	wtn220207, 	rtn131207, 	afn120207, 	bps030213, 	lnd110210, 	pop060210 ))))
+
+
+write.csv(x2,"var.corr.CrmYrSt_wDemo2.csv")
+
+#psych::pairs.panels(subset(CrmYrSt_wDemo,select= c(	afn120207,	bps030213,	man450207,	vet605213,	wtn220207)))
+
+```
+
+
+
+```{r ReducedDataSetRound1,echo=FALSE}
+
+CrmYrSt_wDemo_s1 <- (subset(CrmYrSt_wDemo,select= c(incrrt,executions,state.abb,state,year, population,   violent.crime.rate, 	murder.and.nonnegligent.manslaughter.rate, 	forcible.rape.rate, 	robbery.rate, 	aggravated.assault.rate, 	larceny.theft.rate, 	property.crime.rate, 	burglary.rate, 	motor.vehicle.theft.rate,  	illiteracy, 	lifeexp, 	 	pst120213, 	age135213, 	age295213, 	age775213, 	sex255213, 	rhi125213, 	rhi225213, 	rhi325213, 	rhi525213, 	rhi725213, 	 	pop715213, 	pop815213, 	edu635213, 	edu685213, 	lfe305213, 	hsg445213, 	hsg096213, 	hsg495213, 	hsd310213, 	inc910213, 	inc110213, 	pvy020213, 	bza115213, 	sbo015207, 	wtn220207, 	rtn131207,  lnd110210, 	pop060210 )))
+
+#dim(CrmYrSt_wDemo)
+
+#47 columns.  Columns 5 - 47 are the dependent variables
+#dim(CrmYrSt_wDemo_s1)
+#names(CrmYrSt_wDemo_s1)
+
+```
+
+####Checking for variables that are dominated by one or two outliers  
+
+Any variable that had a maximum standardized z-score >7 was examined to see if it was dominated by a few outliers, which might make it unhelpful for modeling.  Histograms and plots of suspect variables were examined to determine if the high values were outliers or on a smooth continuum.  Nothing stood out in the remaining variables enough to justify removing them from the set of variables to try in the model.  
+
+To decide the z-score threshold, first a data frame of random  z-scores with mean 0 and standard deviation of 1 were generated.   The data frame had the same dimensions as the data set.  The maximum z-score was computed for each column.   The median of maximum z-score's was about 3.5. Two times 3.5 is 7, which was the z-score threshold that made a variable a candidate for removal due to extreme outliers.  
+
+```{r normalize.data.z.scores, echo=FALSE, eval=FALSE, tidy=TRUE}
+#standardizing the variables to have mean  0 and sd 1
+CrZscores=scale(CrmYrSt_wDemo_s1[,-c(1:5)])
+#dim(CrZscores)
+set.seed(2015)
+# summary of randomly generated max z-scores for each column.
+summary(apply(matrix(rnorm((dim(CrZscores)[1])*(dim(CrZscores)[2])),ncol=dim(CrZscores)[2]),2,function(x) max(abs(x))))
+```
+
+ 
+```{r ZScoreOutput, echo=FALSE, eval=FALSE}
+#This is an example of the output.  There were not any z-scores that were high enough to stand out. 
+# (summary(CrZscores))
+(summary(CrZscores))[6,1:3]
+
+
+```
+
+
+
+```{r HistPlotting1, eval=FALSE, echo=FALSE}
+#Histograms of each variable was examined.  Here is an example:
+
+par(mfrow=c(2,2))
+hist(CrmYrSt_wDemo_s1$incrrt, main=NULL)
+hist(CrmYrSt_wDemo_s1$executions, main=NULL)
+hist(CrmYrSt_wDemo_s1$year,main=NULL)
+hist(CrmYrSt_wDemo_s1$population,main=NULL)
+par(mfrow=c(1,1))
+```
+
+```{r HistPlotting2, eval=FALSE, echo=FALSE}
+par(mfrow=c(2,2))
+hist(CrmYrSt_wDemo_s1$violent.crime.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$murder.and.nonnegligent.manslaughter.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$forcible.rape.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$robbery.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$aggravated.assault.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$larceny.theft.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$property.crime.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$burglary.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$motor.vehicle.theft.rate,main=NULL)
+hist(CrmYrSt_wDemo_s1$illiteracy,main=NULL)
+hist(CrmYrSt_wDemo_s1$lifeexp,main=NULL)
+hist(CrmYrSt_wDemo_s1$pst120213,main=NULL)
+hist(CrmYrSt_wDemo_s1$age135213,main=NULL)
+hist(CrmYrSt_wDemo_s1$age295213,main=NULL)
+hist(CrmYrSt_wDemo_s1$age775213,main=NULL)
+hist(CrmYrSt_wDemo_s1$sex255213,main=NULL)
+hist(CrmYrSt_wDemo_s1$rhi125213,main=NULL)
+hist(CrmYrSt_wDemo_s1$rhi225213,main=NULL)
+hist(CrmYrSt_wDemo_s1$rhi325213,main=NULL)
+hist(CrmYrSt_wDemo_s1$rhi525213,main=NULL)
+hist(CrmYrSt_wDemo_s1$rhi725213,main=NULL)
+hist(CrmYrSt_wDemo_s1$pop715213,main=NULL)
+hist(CrmYrSt_wDemo_s1$pop815213,main=NULL)
+hist(CrmYrSt_wDemo_s1$edu635213,main=NULL)
+hist(CrmYrSt_wDemo_s1$edu685213,main=NULL)
+hist(CrmYrSt_wDemo_s1$lfe305213,main=NULL)
+hist(CrmYrSt_wDemo_s1$hsg445213,main=NULL)
+hist(CrmYrSt_wDemo_s1$hsg096213,main=NULL)
+hist(CrmYrSt_wDemo_s1$hsg495213,main=NULL)
+hist(CrmYrSt_wDemo_s1$hsd310213,main=NULL)
+hist(CrmYrSt_wDemo_s1$inc910213,main=NULL)
+hist(CrmYrSt_wDemo_s1$inc110213,main=NULL)
+hist(CrmYrSt_wDemo_s1$pvy020213,main=NULL)
+hist(CrmYrSt_wDemo_s1$bza115213,main=NULL)
+hist(CrmYrSt_wDemo_s1$sbo015207,main=NULL)
+hist(CrmYrSt_wDemo_s1$wtn220207,main=NULL)
+hist(CrmYrSt_wDemo_s1$rtn131207,main=NULL)
+hist(CrmYrSt_wDemo_s1$lnd110210,main=NULL)
+hist(CrmYrSt_wDemo_s1$pop060210,main=NULL)
+
+
+par(mfrow=c(1,1))
+ 
+```
+
+
+
+```{r TryLasso,eval=FALSE, echo=FALSE}
+
+#names(CrmYrSt_wDemo_s1)
+#str(CrmYrSt_wDemo_s1)
+lass.ir <- glmnet::cv.glmnet(x=as.matrix(CrmYrSt_wDemo_s1[,6:45]),y=log(CrmYrSt_wDemo_s1$incrrt),keep=TRUE)
+
+summary(CrmYrSt_wDemo_s1)
+dim(CrmYrSt_wDemo_s1)
+
+#Hmmm Lasso picks about 32 of the 40 dependent variables.  This is not much of a reduction.  
+plot(lass.ir)
+
+plot(lass.ir$glmnet.fit,xvar='lambda', label=TRUE)
+
+
+summary(CrmYrSt_wDemo_s1)
+names(lass.ir)
+best.ind-which(lass.ir$lambda==lass.ir$lambda.min)
+asgoodind=which(lass.ir$lambda==lass.ir$lambda.1se)
+rownames(lass.ir$glmnet.fit$beta)[lass.ir$glmnet.fit$beta[,asgoodind]!=0]
+
+
+
+```
+
+
+```{r TryStepwise, eval=FALSE, echo=FALSE}
+
+
+CrmYrSt_incr1 <- (subset(CrmYrSt_wDemo_s1,select= -c(executions,state.abb,state)))
+                 
+
+## build model (using nlme)
+obj<-lm(log(incrrt)~year+population+ violent.crime.rate+property.crime.rate+ inc110213 + pvy020213,data=CrmYrSt_incr1)
+
+obj<-lm(log(incrrt)~.,data=CrmYrSt_incr1)
+
+## run stepwise AIC (using MASS & nlme)
+fit<-stepAIC(obj,direction="both",trace=0,k=2)
+fit$anova
+
+names(fit)
+
+summary(fit)
+```
+
+
+#### Removing variables with a low correlation with incarceration rate for the initial modeling.      
+
+Variables with a low correlation score with incarceration rate was found.  Of those variables with low correlation scores, the plots were examined to check for potential non-linear relationships.  Independent variables that had a weak relationship with incarceration rate were candidates to be removed for the first round of modeling.   The variables that were removed are listed in Appendix 3 part D.  
+
+The packages that were used are:  stats::cor, ggplot2::ggplot.      
+
+An example of what was examined is in the plot below.      
+ 
+```{r IncrCor ,echo=FALSE}
+
+
+#g1<-ggplot(CrmYrSt_wDemo_s1, aes(incrrt,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$incrrt)))))
+g2<-ggplot(CrmYrSt_wDemo_s1, aes(executions,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$executions)))))
+g3<-ggplot(CrmYrSt_wDemo_s1, aes(year,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$year)))))
+g4<-ggplot(CrmYrSt_wDemo_s1, aes(population,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$population)))))
+g5<-ggplot(CrmYrSt_wDemo_s1, aes(violent.crime.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$violent.crime.rate)))))
+g6<-ggplot(CrmYrSt_wDemo_s1, aes(murder.and.nonnegligent.manslaughter.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$murder.and.nonnegligent.manslaughter.rate)))))
+g7<-ggplot(CrmYrSt_wDemo_s1, aes(forcible.rape.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$forcible.rape.rate)))))
+g8<-ggplot(CrmYrSt_wDemo_s1, aes(robbery.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$robbery.rate)))))
+g9<-ggplot(CrmYrSt_wDemo_s1, aes(aggravated.assault.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$aggravated.assault.rate)))))
+g10<-ggplot(CrmYrSt_wDemo_s1, aes(larceny.theft.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$larceny.theft.rate)))))
+g11<-ggplot(CrmYrSt_wDemo_s1, aes(property.crime.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$property.crime.rate)))))
+g12<-ggplot(CrmYrSt_wDemo_s1, aes(burglary.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$burglary.rate)))))
+g13<-ggplot(CrmYrSt_wDemo_s1, aes(motor.vehicle.theft.rate,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$motor.vehicle.theft.rate)))))
+g14<-ggplot(CrmYrSt_wDemo_s1, aes(illiteracy,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$illiteracy)))))
+g15<-ggplot(CrmYrSt_wDemo_s1, aes(lifeexp,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$lifeexp)))))
+g16<-ggplot(CrmYrSt_wDemo_s1, aes(pst120213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$pst120213)))))
+g17<-ggplot(CrmYrSt_wDemo_s1, aes(age135213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$age135213)))))
+g18<-ggplot(CrmYrSt_wDemo_s1, aes(age295213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$age295213)))))
+g19<-ggplot(CrmYrSt_wDemo_s1, aes(age775213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$age775213)))))
+g20<-ggplot(CrmYrSt_wDemo_s1, aes(sex255213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$sex255213)))))
+g21<-ggplot(CrmYrSt_wDemo_s1, aes(rhi125213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$rhi125213)))))
+g22<-ggplot(CrmYrSt_wDemo_s1, aes(rhi225213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$rhi225213)))))
+g23<-ggplot(CrmYrSt_wDemo_s1, aes(rhi325213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$rhi325213)))))
+g24<-ggplot(CrmYrSt_wDemo_s1, aes(rhi525213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$rhi525213)))))
+g25<-ggplot(CrmYrSt_wDemo_s1, aes(rhi725213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$rhi725213)))))
+g26<-ggplot(CrmYrSt_wDemo_s1, aes(pop715213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$pop715213)))))
+g27<-ggplot(CrmYrSt_wDemo_s1, aes(pop815213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$pop815213)))))
+g28<-ggplot(CrmYrSt_wDemo_s1, aes(edu635213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$edu635213)))))
+g29<-ggplot(CrmYrSt_wDemo_s1, aes(edu685213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$edu685213)))))
+g30<-ggplot(CrmYrSt_wDemo_s1, aes(lfe305213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$lfe305213)))))
+g31<-ggplot(CrmYrSt_wDemo_s1, aes(hsg445213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$hsg445213)))))
+g32<-ggplot(CrmYrSt_wDemo_s1, aes(hsg096213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$hsg096213)))))
+g33<-ggplot(CrmYrSt_wDemo_s1, aes(hsg495213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$hsg495213)))))
+g34<-ggplot(CrmYrSt_wDemo_s1, aes(hsd310213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$hsd310213)))))
+g35<-ggplot(CrmYrSt_wDemo_s1, aes(inc910213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$inc910213)))))
+g36<-ggplot(CrmYrSt_wDemo_s1, aes(inc110213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$inc110213)))))
+g37<-ggplot(CrmYrSt_wDemo_s1, aes(pvy020213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$pvy020213)))))
+g38<-ggplot(CrmYrSt_wDemo_s1, aes(bza115213,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$bza115213)))))
+g39<-ggplot(CrmYrSt_wDemo_s1, aes(sbo015207,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$sbo015207)))))
+g40<-ggplot(CrmYrSt_wDemo_s1, aes(wtn220207,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$wtn220207)))))
+g41<-ggplot(CrmYrSt_wDemo_s1, aes(rtn131207,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$rtn131207)))))
+g42<-ggplot(CrmYrSt_wDemo_s1, aes(lnd110210,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$lnd110210)))))
+g43<-ggplot(CrmYrSt_wDemo_s1, aes(pop060210,incrrt)) +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+ggtitle(paste( "cor = ",(as.character(cor(CrmYrSt_wDemo_s1$incrrt,CrmYrSt_wDemo_s1$pop060210)))))
+
+
+##########  looking for non-linear trends
+
+#g1s<-ggplot(CrmYrSt_wDemo_s1, aes(incrrt,incrrt)) +geom_point(shape=1) + geom_smooth()
+g2s<-ggplot(CrmYrSt_wDemo_s1, aes(executions,incrrt)) +geom_point(shape=1) + geom_smooth()
+g3s<-ggplot(CrmYrSt_wDemo_s1, aes(year,incrrt)) +geom_point(shape=1) + geom_smooth()
+g4s<-ggplot(CrmYrSt_wDemo_s1, aes(population,incrrt)) +geom_point(shape=1) + geom_smooth()
+g5s<-ggplot(CrmYrSt_wDemo_s1, aes(violent.crime.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g6s<-ggplot(CrmYrSt_wDemo_s1, aes(murder.and.nonnegligent.manslaughter.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g7s<-ggplot(CrmYrSt_wDemo_s1, aes(forcible.rape.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g8s<-ggplot(CrmYrSt_wDemo_s1, aes(robbery.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g9s<-ggplot(CrmYrSt_wDemo_s1, aes(aggravated.assault.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g10s<-ggplot(CrmYrSt_wDemo_s1, aes(larceny.theft.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g11s<-ggplot(CrmYrSt_wDemo_s1, aes(property.crime.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g12s<-ggplot(CrmYrSt_wDemo_s1, aes(burglary.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g13s<-ggplot(CrmYrSt_wDemo_s1, aes(motor.vehicle.theft.rate,incrrt)) +geom_point(shape=1) + geom_smooth()
+g14s<-ggplot(CrmYrSt_wDemo_s1, aes(illiteracy,incrrt)) +geom_point(shape=1) + geom_smooth()
+g15s<-ggplot(CrmYrSt_wDemo_s1, aes(lifeexp,incrrt)) +geom_point(shape=1) + geom_smooth()
+g16s<-ggplot(CrmYrSt_wDemo_s1, aes(pst120213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g17s<-ggplot(CrmYrSt_wDemo_s1, aes(age135213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g18s<-ggplot(CrmYrSt_wDemo_s1, aes(age295213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g19s<-ggplot(CrmYrSt_wDemo_s1, aes(age775213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g20s<-ggplot(CrmYrSt_wDemo_s1, aes(sex255213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g21s<-ggplot(CrmYrSt_wDemo_s1, aes(rhi125213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g22s<-ggplot(CrmYrSt_wDemo_s1, aes(rhi225213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g23s<-ggplot(CrmYrSt_wDemo_s1, aes(rhi325213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g24s<-ggplot(CrmYrSt_wDemo_s1, aes(rhi525213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g25s<-ggplot(CrmYrSt_wDemo_s1, aes(rhi725213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g26s<-ggplot(CrmYrSt_wDemo_s1, aes(pop715213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g27s<-ggplot(CrmYrSt_wDemo_s1, aes(pop815213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g28s<-ggplot(CrmYrSt_wDemo_s1, aes(edu635213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g29s<-ggplot(CrmYrSt_wDemo_s1, aes(edu685213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g30s<-ggplot(CrmYrSt_wDemo_s1, aes(lfe305213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g31s<-ggplot(CrmYrSt_wDemo_s1, aes(hsg445213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g32s<-ggplot(CrmYrSt_wDemo_s1, aes(hsg096213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g33s<-ggplot(CrmYrSt_wDemo_s1, aes(hsg495213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g34s<-ggplot(CrmYrSt_wDemo_s1, aes(hsd310213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g35s<-ggplot(CrmYrSt_wDemo_s1, aes(inc910213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g36s<-ggplot(CrmYrSt_wDemo_s1, aes(inc110213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g37s<-ggplot(CrmYrSt_wDemo_s1, aes(pvy020213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g38s<-ggplot(CrmYrSt_wDemo_s1, aes(bza115213,incrrt)) +geom_point(shape=1) + geom_smooth()
+g39s<-ggplot(CrmYrSt_wDemo_s1, aes(sbo015207,incrrt)) +geom_point(shape=1) + geom_smooth()
+g40s<-ggplot(CrmYrSt_wDemo_s1, aes(wtn220207,incrrt)) +geom_point(shape=1) + geom_smooth()
+g41s<-ggplot(CrmYrSt_wDemo_s1, aes(rtn131207,incrrt)) +geom_point(shape=1) + geom_smooth()
+g42s<-ggplot(CrmYrSt_wDemo_s1, aes(lnd110210,incrrt)) +geom_point(shape=1) + geom_smooth()
+g43s<-ggplot(CrmYrSt_wDemo_s1, aes(pop060210,incrrt)) +geom_point(shape=1) + geom_smooth()
+
+```
+ 
+
+```{r PrintIncrCor1, echo=FALSE, include=FALSE}
+
+
+
+gridExtra::grid.arrange(g5, g5s, ncol=2)                      
+  
+
+```
+
+```{r PrintIncrCor2, eval=FALSE, echo=FALSE}
+
+
+require(gridExtra)
+grid.arrange(g3 ,g4,g5,g6, ncol=2)            
+grid.arrange(g7 ,g8, g9,g10, ncol=2)  
+grid.arrange(g11 ,g12,g13,g14, ncol=2)            
+grid.arrange(g15 ,g16, g17 ,g18, ncol=2)  
+grid.arrange(g19 ,g20,g21,g22, ncol=2)            
+grid.arrange(g23 ,g23, g25,g26, ncol=2)  
+grid.arrange(g27 ,g28,g29,g30, ncol=2)            
+grid.arrange(g31 ,g32, g33 ,g34, ncol=2) 
+grid.arrange(g35 ,g36,g37, g38, ncol=2)            
+grid.arrange(g39 ,g40, g41,g42, ncol=2)  
+g43  
+
+```
+
+
+#### Choosing initial variables from the crime data  
+
+
+
+```{r, echo=FALSE}
+vpc <- cor(CrmYrSt_wDemo$violent.crime.rate, CrmYrSt_wDemo$property.crime.rate)
+
+```
+ 
+
+The violent crime rate is the sum of:  murder and non negligent manslaughter rate, forcible rape rate, robbery rate and aggravated assault rate.   The property crime rate the sum of:  burglary rate,larceny theft rate and motor vehicle theft rates. So, either the rolled up values or the more detailed rates should be used for modeling, but not both.  Initially, just the violent crime rate and property crime rate was used.  The correlation between the violent crime rate and property crime rate is `r vpc` .   
+
+The following graphs show the correlation structure and shape of the variables that make up violent crime rate and the property crime rate.  
+
+```{r correlations.of.violent.crime, echo=FALSE, eval=TRUE}
+
+xc <- subset(CrmYrSt_wDemo_s1, select= c(violent.crime.rate,murder.and.nonnegligent.manslaughter.rate,forcible.rape.rate,robbery.rate,aggravated.assault.rate,property.crime.rate, burglary.rate,larceny.theft.rate,motor.vehicle.theft.rate))
+
+psych::pairs.panels(xc[,1:5], main="Correlation of violent  crime statistics \n the violent crime rate is a function of the other violent crimes",cex.main=0.6)
+```
+
+```{r correlations.of.property.crime2, eval=TRUE, echo=FALSE}
+
+psych::pairs.panels(xc[,6:9], main="Correlation of property  crime statistics \n the property crime rate is a function of the other violent crimes",cex.main=0.6)
+
+```
+
+
+#### The data set for initial modeling.  
+
+```{r IncrSub, echo=FALSE,eval=TRUE}
+
+# maybe add later: murder.and.nonnegligent.manslaughter.rate,   forcible.rape.rate,   robbery.rate,   aggravated.assault.rate,  larceny.theft.rate,   burglary.rate,   motor.vehicle.theft.rate,
+ 
+# spline - forcible.rape.rate, violent crime rate and murder rate
+# 2nd degree  poly -robbery rate, inc110213
+# spline - rhi125213 (or toss out)  % white
+#names(CrmYrSt_wDemo)
+#   murder.and.nonnegligent.manslaughter.rate, forcible.rape.rate, robbery.rate, aggravated.assault.rate , burglary.rate , larceny.theft.rate , motor.vehicle.theft.rate,
+#
+incr.sub1d <- (subset(CrmYrSt_wDemo,select= c(incrrt,year, violent.crime.rate,  property.crime.rate,  illiteracy,   lifeexp,  rhi125213,   rhi225213,  	edu635213, 	edu685213,	inc110213, 	pvy020213, bza115213, 	rtn131207,population, age295213,pop060210 )))
+
+
+
+incr.sub2d <-  as.data.frame(scale(incr.sub1d)) #scale most variables
+incr.sub2d$incrrt <- CrmYrSt_wDemo$incrrt 
+incr.sub2d$state <- CrmYrSt_wDemo$state 
+incr.sub2d$year <- CrmYrSt_wDemo$year 
+#names(incr.sub2d)
+#incr.sub2d$state.abb <- CrmYrSt_wDemo$state.abb 
+#incr.sub2d$state.region <- CrmYrSt_wDemo$state.region
+#incr.sub2d$state.division <- CrmYrSt_wDemo$state.division 
+
+# Finding what was removed
+#x <- as.data.frame(names(CrmYrSt_wDemo_s1))
+#names(x) <- "name"
+#x$inx <- 1
+#y <- as.data.frame(names(incr.sub2d))
+#names(y) <- "name"
+#y$iny <- 1
+#xy <-merge(x,y, all=TRUE)
+#xy[order(xy$iny),]
+
+```
+
+The data set started out with 80 variables.  After all the reductions, the dimensions are `r dim(incr.sub2d)`.  
+Some notes:  
+*  There are 16 independent variables to model with initially.
+*  Incrrt is the response variable that was modeled.    
+*  State was a random variable in the model.  
+*  With the exception of year, each of the independent variables were standardized by subtracting the average and dividing by the standard deviation.    
+
+__A list of the variables in the reduced data set for the initial model.__     
+```{r names.def, echo=FALSE}
+
+#names(low.cor)
+n <- as.data.frame(names(incr.sub2d))
+names(n) <- "data_item.lower"
+n1 <- merge(x=n,y=qf_dd,all.x=TRUE)[,c(1,3)]
+knitr::kable(n1)
+
+```
+
+
+
+
+
+##Results:  Choosing a model
+
+The package mgcv::gamm was used for modeling, although nlme::gls worked as well.  Variables in the model were reduced by several stages in a process that was something like backward selection.  Variables were kept and eliminated was based on p-values, the AIC, the BIC and my understanding of the data.   
+
+
+```{r model.play, eval=FALSE, echo=FALSE }
+
+# some hints from the web
+#  http://r.789695.n4.nabble.com/Assessing-temporal-correlation-in-GAM-with-irregular-time-steps-td4674808.html  
+
+#As you are using `mgcv::gam` you could also use `mgcv::gamm` which can  then leverage the correlation structures from the nlme package, which  has spatial correlation structures (and you can think of time as a 1-d  spatial direction). The package also has a `corCAR1()` correlation  structure which is the continuous-time analogue of the AR(1). Fitting via `gamm()` will also allow you to use the `Variogram()` function from the nlme package to assess the model residuals for residual  autocorrelation. 
+
+#http://stats.stackexchange.com/questions/80823/do-autocorrelated-residual-patterns-remain-even-in-models-with-appropriate-corre
+
+# Lists some modeling options
+# http://cran.r-project.org/doc/contrib/Ricci-refcard-regression.pdf
+
+inc.gamm.m1 <- mgcv::gamm(log(incrrt)~ s(year) + inc110213+  violent.crime.rate+  property.crime.rate  +  pvy020213 + inc110213*pvy020213  + inc110213*violent.crime.rate  + pvy020213*violent.crime.rate, data=incr.sub2d)
+summary(inc.gamm.m1$lme )
+summary(inc.gamm.m1$gam )
+anova(inc.gamm.m1$gam)
+
+#inc.gamm.m2 <- mgcv::gamm(log(incrrt)~ s(year)+ inc110213 +  pvy020213 + inc110213*pvy020213+  violent.crime.rate+  property.crime.rate  + inc110213*violent.crime.rate  + pvy020213*violent.crime.rate, data=incr.sub2d,   correlation  = corCAR1(form = ~year|state))
+
+inc.gamm.m2 <- mgcv::gamm(log(incrrt)~ s(year)+ violent.crime.rate+  property.crime.rate  +inc110213+   pvy020213 + inc110213*pvy020213  + inc110213*violent.crime.rate  + pvy020213*violent.crime.rate , data=incr.sub2d,   correlation  = corCAR1(form = ~year|state))
+summary(inc.gamm.m2$lme )
+summary(inc.gamm.m2$gam )
+summary(inc.gamm.m2$gam )$r.sq
+
+
+
+inc.gamm.yr.state <- mgcv::gamm(log(incrrt)~ s(year)+ state , data=incr.sub2d,   correlation  = corCAR1(form = ~year|state))
+#summary(inc.gamm.yr.state$lme )
+summary(inc.gamm.yr.state$gam )
+#names(inc.gamm.yr.state$gam )
+names(summary(inc.gamm.yr.state$gam ))
+summary(inc.gamm.yr.state$gam )$r.sq
+
+summary(inc.gls.m2)
+gam.check(inc.gamm.m2$gam )
+gam.check(inc.gls.m2)
+plot(inc.gamm.m2$gam )
+#errors
+layout(matrix(1:2))
+acf(residuals(inc.gamm.m2$lme), main="ACF residuals \n without time correlation")
+acf(residuals(inc.gamm.m2$lme,type="normalized"),main="ACF normalized residuals \n which includes AR1 time correlation")
+layout(1)
+
+layout(matrix(1:2))
+acf(residuals(inc.gamm.m2$lme), type="p", main="Partial ACF residuals \n without time correlation")
+acf(residuals(inc.gamm.m2$lme,type="normalized"), type="p",main="Partial ACF normalized residuals \n which includes AR1 time correlation" )
+layout(1)
+
+#names(inc.gamm.m2$lme)
+
+#significant improvement adding time lag correlatoin
+anova.lme(inc.gamm.yr.state$lme,inc.gamm.m2$lme)
+anova.gam(inc.gamm.yr.state$gam,inc.gamm.m2$gam)
+
+```
+
+```{r the.top.models, echo=FALSE}
+
+
+yr.inc.pvty.vlnt.prpty.5 <- mgcv::gamm(log(incrrt)~ s(year) + violent.crime.rate+  property.crime.rate + inc110213 +  pvy020213 + inc110213*violent.crime.rate  , data=incr.sub2d,   correlation  = corCAR1(form =~year|state))
+#summary(yr.inc.pvty.vlnt.prpty.5$lme)
+# R^2 = 65.6
+#summary(yr.inc.pvty.vlnt.prpty.5$gam)
+
+
+#removing income
+yr.pvty.vlnt.prpty.4 <- mgcv::gamm(log(incrrt)~ s(year) + violent.crime.rate+  property.crime.rate  +  pvy020213   + pvy020213*violent.crime.rate , data=incr.sub2d,   correlation  = corCAR1(form =~year|state))
+#summary(yr.pvty.vlnt.prpty.4$lme)
+#summary(yr.pvty.vlnt.prpty.4$gam) #R^2 = 61.6
+#anova(yr.inc.pvty.vlnt.prpty.5$lme,yr.pvty.vlnt.prpty.4$lme)
+
+#removing property crime
+yr.inc.pvty.vlnt.4 <- mgcv::gamm(log(incrrt)~ s(year) + violent.crime.rate + inc110213 +  pvy020213  + inc110213*violent.crime.rate,data=incr.sub2d,   correlation  = corCAR1(form =~year|state))
+# summary(yr.inc.pvty.vlnt.4$lme)
+#summary(yr.inc.pvty.vlnt.4$gam)
+#anova(yr.inc.pvty.vlnt.prpty.5$lme, yr.inc.pvty.vlnt.4$lme )
+
+yr.pvty.vlnt.3<- mgcv::gamm(log(incrrt)~ s(year) + violent.crime.rate +  pvy020213,data=incr.sub2d,   correlation  = corCAR1(form =~year|state))
+
+inc.gamm.yr.state <- mgcv::gamm(log(incrrt)~ s(year)+ state , data=incr.sub2d,   correlation  = corCAR1(form = ~year|state))
+
+#summary(inc.gamm.yr.state$gam)
+
+```
+
+I ended up with 3 competing models.  Each used a spline function for year, a time auto-regression and used state as a random variable. The only difference is in the fixed terms.
+
+```{r model.new.names, echo=FALSE}
+model5 <- yr.inc.pvty.vlnt.prpty.5
+model4 <- yr.pvty.vlnt.prpty.4
+model3 <- yr.pvty.vlnt.3
+```
+
+Model5 had 5 fixed terms and an interaction. Model4 had 4 fixed terms.  Model4 had the same terms as model5 minus median income. Model3 had 3 fixed terms.  Model3 was model5 minus median income and property crime rate.      
+
+Model5:  ln(incarceration rate)~ year(spline)  +  median income + % below the poverty level +  violent crime rate +  property crime rate  + median income * violent crime rate  +  AR(1) time auto regression.  
+
+Model4:  ln(incarceration rate)~ year(spline)   + % below the poverty level +  violent crime rate +  property crime rate  +  AR(1) time auto regression.  
+
+Model3:  ln(incarceration rate)~ year(spline)   + % below the poverty level +  violent crime rate +   AR(1) time auto regression.  
+
+```{r, echo=FALSE}
+#anova(yr.inc.pvty.vlnt.prpty.5$gam)
+
+cor.inc.pov <- cor(CrmYrSt_wDemo$inc110213,CrmYrSt_wDemo$pvy020213)
+cor.vlnt.pr <- cor(CrmYrSt_wDemo$violent.crime.rate,CrmYrSt_wDemo$property.crime.rate)
+
+cor.yr.pr <- cor(CrmYrSt_wDemo$year,CrmYrSt_wDemo$property.crime.rate)
+
+```
+
+Every term in the model 5 is significant with all the p-values < 0.05.  However, income and poverty have a correlation of `r cor.inc.pov `.  The property crime rate is correlated with the violent crime rate at `r cor.vlnt.pr` and the year at `r cor.yr.pr `.  
+
+```{r, echo=FALSE, eval=FALSE}
+# __The Anova for model 5 is.__
+t1 <- summary(model5$gam)$p.table[,c(1,4)]
+knitr::kable(t1)
+
+```
+
+
+__Correlations for the terms in the final model.__   
+inc110213 is median income. pvy020213 is % living below the poverty level  
+
+```{r final5.cor, echo=FALSE}
+
+x.final <- subset(CrmYrSt_wDemo, select= c(year,inc110213, pvy020213, violent.crime.rate,property.crime.rate))
+
+psych::pairs.panels(x.final, main="Correlation of the  variables in model 5",cex.main=0.6)
+
+
+```
+
+
+__Plots of incarceration rate with each final variables in model 5.__     
+inc110213 is median income. pvy020213 is % living below the poverty level  
+```{r Plots1, echo=FALSE}
+
+gridExtra::grid.arrange(g3, g5, g11, g36 ,g37, ncol=2) 
+
+```
+ 
+__Comparing the AIC and BIC for the models.__  Lower is better for both AIC and BIC.  So, the results are mixed.  
+    
+```{r compare.models.aic, echo=FALSE,tidy=TRUE}    
+(anova(model5$lme, model4$lme)) 
+(anova(model5$lme, model3$lme))
+(anova(model4$lme, model3$lme))
+
+
+#xyz <- rbind(x,y,z)
+#knitr::kable(xyz)
+
+```
+
+
+
+##Results:  The final model 
+
+Model 4 was chosen as the final model.  
+```{r model.final, echo=FALSE}  
+model.final <- yr.pvty.vlnt.prpty.4  
+final.r <- summary(model.final$gam)$r.sq
+
+```
+
+
+__The Anova__
+```{r, echo=FALSE}
+t <- summary(model.final$gam)$p.table[,c(1,4)]
+knitr::kable(t)
+
+```
+ 
+
+__Model diagnostics for goodness of fit.__
+```{r, echo=FALSE}
+#anova(inc.gamm.m2$lme )
+gam.check(model.final$gam )
+```
+
+
+
+__Some diagnostic graphs for AR(1) .__  
+The graphs with AR(1) look better.    
+
+```{r, echo=FALSE}
+
+#layout(matrix(2:1))
+par(mfrow=c(1,2))
+acf(residuals(model.final$lme), main="ACF residuals \n NO AR(1) adjustment")
+acf(residuals(model.final$lme,type="normalized"),main="ACF normalized residuals \n includes AR(1) in the model")
+#layout(1)
+
+#a bit better behaved
+#layout(matrix(1:2))
+par(mfrow=c(1,2))
+acf(residuals(model.final$lme), type="p", main="Partial ACF residuals \n NO AR(1) adjustment")
+acf(residuals(model.final$lme,type="normalized"), type="p",main="Partial ACF normalized residuals \n includes AR(1) in the model" )
+layout(1)
+par(mfrow=c(1,1))
+#plot(inc.gamm.m2,pages=1) 
+
+```
+
+
+
+__Plots of predicted vs actual for a few states.__   
+```{r, echo=FALSE}
+
+par(mfrow=c(2,2))
+
+ plot(x=exp(model.final$gam$y[CrmYrSt_wDemo$state=="Idaho"]), y=exp(model.final$gam$fitted.values[CrmYrSt_wDemo$state=="Idaho"]), xlab="actual incarceration rate",ylab="fitted incarceration rate", main="Texas, 1978-2012",xlim=c(0,900),ylim=c(0,900))
+
+ plot(x=exp(model.final$gam$y[CrmYrSt_wDemo$state=="Texas"]), y=exp(model.final$gam$fitted.values[CrmYrSt_wDemo$state=="Texas"]), xlab="actual incarceration rate",ylab="fitted incarceration rate", main="Idaho, 1978-2012",xlim=c(0,900),ylim=c(0,900))
+
+plot(x=exp(model.final$gam$y[CrmYrSt_wDemo$state=="Nevada"]), y=exp(model.final$gam$fitted.values[CrmYrSt_wDemo$state=="Nevada"]), xlab="actual incarceration rate",ylab="fitted incarceration rate", main="Nevada, 1978-2012",xlim=c(0,900),ylim=c(0,900))
+
+
+plot(x=exp(model.final$gam$y[CrmYrSt_wDemo$state=="Washington"]), y=exp(model.final$gam$fitted.values[CrmYrSt_wDemo$state=="Washington"]), xlab="actual incarceration rate",ylab="fitted incarceration rate", main="Washington, 1978-2012",xlim=c(0,900),ylim=c(0,900))
+
+par(mfrow=c(1,1))
+
+
+```
+
+
+
+
+__Plot of predicted vs actual for all states and years__
+
+```{r Plots2, echo=FALSE, eval=TRUE}
+     
+act.fit <- as.data.frame(cbind (exp(model.final$gam$y), exp(model.final$gam$fitted.values),CrmYrSt_wDemo$year, CrmYrSt_wDemo$state))
+
+names(act.fit) <- c("incrrt","fitted.incrrt","year","state")
+
+
+act.fit.plot <- ggplot2::ggplot(act.fit, aes(incrrt, fitted.incrrt))  +geom_point(shape=1) + geom_smooth(method="lm", se=TRUE)+  xlim(0,900) + ylim(0,900) +
+  ggplot2::xlab("actual incarceration rates") +
+  ggplot2::ylab("predicted incarceration rates")+ 
+  ggplot2::ggtitle("Actual vs predicted incarceration rates \n for each U.S. state between 1978 and 2012")
+                  
+
+act.fit.plot
+
+
+
+#require(gridExtra)
+#grid.arrange(gg1,gg2, ncol=2) 
+#par(mfrow=c(1,1))
+#layout(1)
+```
+
+
+__Maps of the actual vs fitted values for the year 2000.__
+Maps for the years 1980 and 2012 are in Appendix 4.  
+```{r Actual.fitted.map, echo=FALSE}
+
+#summary(inc.gamm.m2)
+
+
+red=rgb(1,0,0); green=rgb(0,1,0); blue=rgb(0,0,1); white=rgb(1,1,1)
+GtoWrange<-colorRampPalette(c(green, white) )
+WtoRrange<-colorRampPalette(c(white, red ) )
+states <- map_data("state")
+
+# for the year 2000
+IncrRt2000 <- subset(CrmYrSt_wDemo,year==2000,select=c(state.name.lower,incrrt))
+names(IncrRt2000) <-c("region","incrrt")
+choro <- merge(states, IncrRt2000, sort = FALSE, by = "region")
+
+
+choro <- choro[order(choro$order), ]
+actual_incr2000 <- ggplot2::qplot(long, lat, data = choro, group = group, fill = incrrt,geom = "polygon",main="Actual incarceration rate \n year=2000")
+actual_incr2000 <-actual_incr2000  + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=400, high="red")
+
+
+
+state.pred2000<- cbind(exp(model.final$gam$fitted),as.data.frame(CrmYrSt_wDemo$state.name.lower))[CrmYrSt_wDemo$year==2000,]
+names(state.pred2000)<-c("pred.incr","region")
+choro2 <- merge(states, state.pred2000, sort = FALSE, by = "region")
+choro2 <- choro2[order(choro2$order), ]
+pred_incr2000 <- ggplot2::qplot(long, lat, data = choro2, group = group, fill = pred.incr,geom = "polygon",main="Predicted incarceration rate \n year=2000")
+pred_incr2000 <- pred_incr2000 + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=400, high="red")
+
+
+#####for the year 1980.  Consider making a functions
+
+IncrRt1980 <- subset(CrmYrSt_wDemo,year==1980,select=c(state.name.lower,incrrt))
+names(IncrRt1980) <-c("region","incrrt")
+choro <- merge(states, IncrRt1980, sort = FALSE, by = "region")
+
+choro <- choro[order(choro$order), ]
+actual_incr1980 <- ggplot2::qplot(long, lat, data = choro, group = group, fill = incrrt,geom = "polygon",main="Actual incarceration rt. \n year=1980")
+actual_incr1980 <-actual_incr1980  + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=120, high="red")
+
+
+state.pred1980<- cbind(exp(model.final$gam$fitted),as.data.frame(CrmYrSt_wDemo$state.name.lower))[CrmYrSt_wDemo$year==1980,]
+names(state.pred1980)<-c("pred.incr","region")
+choro2 <- merge(states, state.pred1980, sort = FALSE, by = "region")
+choro2 <- choro2[order(choro2$order), ]
+pred_incr1980 <- ggplot2::qplot(long, lat, data = choro2, group = group, fill = pred.incr,geom = "polygon",main="Pred. incarceration rt \n year=1980")
+pred_incr1980 <- pred_incr1980 + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=120, high="red")
+
+####################
+
+
+#####for the year 2012.  Consider making a functions
+
+IncrRt2012 <- subset(CrmYrSt_wDemo,year==1980,select=c(state.name.lower,incrrt))
+names(IncrRt2012) <-c("region","incrrt")
+choro <- merge(states, IncrRt2012, sort = FALSE, by = "region")
+
+choro <- choro[order(choro$order), ]
+actual_incr2012 <- ggplot2::qplot(long, lat, data = choro, group = group, fill = incrrt,geom = "polygon",main="Actual incarceration rt. \n year=2012")
+actual_incr2012 <-actual_incr2012  + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=120, high="red")
+
+
+state.pred2012<- cbind(exp(model.final$gam$fitted),as.data.frame(CrmYrSt_wDemo$state.name.lower))[CrmYrSt_wDemo$year==2012,]
+names(state.pred2012)<-c("pred.incr","region")
+choro2 <- merge(states, state.pred1980, sort = FALSE, by = "region")
+choro2 <- choro2[order(choro2$order), ]
+pred_incr2012 <- ggplot2::qplot(long, lat, data = choro2, group = group, fill = pred.incr,geom = "polygon",main="Pred. incarceration rt \n year=2012")
+pred_incr2012 <- pred_incr2012 + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=120, high="red")
+
+####################
+
+#require(gridExtra)
+#grid.arrange(actual_incr ,pred_incr, ncol=2) 
+#actual_incr2000 
+#pred_incr2000
+
+
+actual_incr2000
+pred_incr2000
+
+
+```
+
+
+#Discussion 
+
+The final model explains about 60% of the variation, which leaves about 40% of the variation of incarceration rates by state unexplained. The model accurately predicts that the north tends to have lower incarceration rates than the south.  It also accurately predicted that Michigan has higher incarceration rates than many of the northern states.  However, the model was inaccurate for other states such as Virginia, West Virginia, Kentucky, Idaho, California and Nevada.  Although it predicted that incarceration rates were higher than usual for Texas, the model under predicted those rates.    
+
+The final model uses a AR(1) time auto-regression has state as a random variable. The formula for the fixed effects is:    
+ln(incarceration rate)~ 
+`r summary(model.final$lme )$coefficients$fixed[1]` + spline function(year)  +
+ `r summary(model.final$lme )$coefficients$fixed[3]`* violent.crime.rate+
+ `r summary(model.final$lme )$coefficients$fixed[4]`* property.crime.rate  +
+`r summary(model.final$lme )$coefficients$fixed[5]`* (% below poverty) +
+`r summary(model.final$lme )$coefficients$fixed[8] `*(% below poverty) * violent.crime.rate  
+
+The coefficients show the direction and strength of the variable.  Of course, since this is observational data, we should think in terms of correlation rather than causation.  
+     
+In the model, states that have a higher percent of people living in poverty tend to have higher incarceration rates.    Although income was taken out of the final model, it was one of the last variables to be removed. It would be interesting to investigate putting income into the model and checking the variance inflation factor since income is correlated with poverty. It is also possible that there might be another variable that could replace both median income and poverty, such a measure of income inequality or the % of people living in urban areas.  
+
+
+```{r, eval=TRUE, echo=FALSE}
+c.p.y <- cor(CrmYrSt_wDemo$year,CrmYrSt_wDemo$property.crime.rate)
+c.p.v <-  cor(CrmYrSt_wDemo$violent.crime.rate,CrmYrSt_wDemo$property.crime.rate)
+```
+
+
+In the final model, incarceration rates tend to be higher in states that have more violent crime, but property crime has a negative effect on the predicted incarceration rate.   More exploration is needed to understand this, which might lead to future adjustments of the model. It would be interesting to substitute burglary, larceny theft and motor vehicle theft for property crime rate in the model.
+
+The property crime rate has a correlation of `r c.p.v ` with the violent crime rate and a correlation of `r c.p.y `  with year. The variance inflation factor could help determine if the multicollinearity is high enough to be a problem. If its too high something could be done such as removing property crime somehow combining variables such as using principal components or using factor analysis.  
+  
+The were removed because of low correlation scores with the incarceration rate can be reconsidered in next phase of modeling.  Jacob Shimmering gives some good reasons to do this in the following blog post:  http://www.r-bloggers.com/stop-using-bivariate-correlations-for-variable-selection/  
+
+Some ideas for more data:  
+ 
+* Because U.S. census demographic data was useful for modeling, some fields could be updated to change with time instead of just being a snapshot in time.    
+* Gathering Federal and state policy information and changes in laws.  
+* State Budgets for things such as law enforcement and prisons.  Some budget information, along with lots of other data, can be found on these pages:   
+http://www.bjs.gov/index.cfm?ty=daa  
+http://www.bjs.gov/content/dtdata.cfm  
+
+
+#Appendix
+
+##Appendix 1:  Data sets and initial variables 
+
+__The main data sets are:__
+
+* **'CrmYrUS':** Incarceration rates , executions and crime estimates for the total US by year.  
+
+
+* **'CrmYrSt_wDemo':**  This data set contains  Incarceration rates, Execution totals, Estimated Crime by year along with state demographics from the Us Census Bureau Quick Facts.     The quick facts was from 2010, so the demographics for each state/year combination will be the same. This data set is a left join of CrmYrSt and StateDemo.
+
+    * **'CrmYrSt':** Incarceration rates , executions and crime estimates by US state by year.  This data set is a subset of CrmYrSt_wDemo.
+
+    * **'StateDemo':** US State Demographics from the R state data files and the US Census Bureau 2010 Quick facts, which has 53 fields.   This data set is a subset of CrmYrSt_wDemo.
+
+* **'qf_dd':**  US Census Bureau quick facts data dictionary, which gives the definition and meaning of the fields.
+
+__A list of initial variables with some definitions:__
+
+The fields listed below were collected for each year and US state from 1978 to 2012.  Some notes:    
+* Incarceration rates are per 100,000 people.  
+* Execution rates are total for each state and year combination.  
+* Crime rates are per 100,000 people. These are a subset of all reported crimes. These crimes are considered to be serious crimes and are thought to be representative of overall crime in the area.  
+* The violent crime rate is a combination of the following:  murder and non-negligent manslaughter rate, forcible rape rate, robbery rate, and aggravated assault rate.  
+* The property crime rate is a combination of the following:  Burglary rate, larceny theft rate, motor vehicle theft rate.   
+* States are U.S. states.  District of Columbia was removed because some complete data fields were missing.  Crime data stopped being collected at a certain year and was rolled up into federal statistics.  When it was reported, crime data for the District of Columbia seemed very high.  
+
+```{r initial crime variables, echo=FALSE}
+names(CrmYrSt_wDemo)[1:14]
+```
+
+The fields below were collected from the R state file.  These fields do not vary year to year. 
+
+```{r r.data, echo=FALSE}
+names(CrmYrSt_wDemo)[15:28]
+
+```
+
+Below are the fields that were used from the Quick Facts from the US Census Bureau.  Most of this data is a snapshot in time.  So, while it varies state to state, it is static year to year.  
+
+```{r quick.facts.data.dictionary, echo=FALSE}
+qf_dd[,2]
+
+```
+
+##Appendix 2:  The get.top.corr function.
+
+
+```{r Fn.get.top.corr_appendix , echo=TRUE, eval=FALSE}
+#A function to find an initial list of variables that are highly correlated
+
+#cor.thrsh  is the correlation threshhold
+#c.data.set  is the data set of numeric variables
+
+get.top.corr <-function(cor.thrsh=0.95,c.data.set){
+  ds<- data.frame()
+  
+while(dim(c.data.set)[2]>0){
+cr <- as.data.frame(cor(c.data.set,use="pairwise.complete.obs"))
+nms <- (names(cr)[cr[1]>=abs(cor.thrsh)])
+cor.mtx <- as.data.frame(cbind(nms,names(cr[1]),length(nms),cor.thrsh))
+ds<- rbind(ds,cor.mtx)
+ c.data.set<- subset(c.data.set,select= !names(c.data.set) %in% nms)
+}
+
+names(ds)<-c("name","grp","nvar","cor")
+
+ds2 <- merge(x=ds[! ds$nvar %in% c("1"),],y=qf_dd,by.x="name",by.y="data_item.lower",all.x=TRUE)
+return(ds2)
+}
+```
+
+
+
+##Appendix 3:  Variable reduction for initial modeling.  
+
+__A.__  These variables were removed either because the information was redundant or it was not needed/wanted for this analysis:    income, murder, hsgrad, area,  fips,state.name.lower ,state.abb, frost,county.name,state.division,state.region , frost, executions 
+
+__B.__  The following groups of variables had a 95% correlation.  This eliminated about 16 variables.  The variable at the top of the list is what was chosen to use for initial modeling.   
+
+
+Keep:  Population (yearly)   
+  * Private nonfarm establishments, 2013  
+  * Private nonfarm employment, 2013  
+  * Households, 2009-2013  
+  * Housing units, 2013  
+  * Nonemployer establishments, 2012  
+  * Population, 2010  
+  * Population, 2010 (April 1) estimates base  
+  * Population, 2013 estimate    
+  * Population, 2014 estimate  
+  * Retail sales, 2007 ($1,000)  
+  * Total number of firms, 2007  
+
+
+Keep:  Population, percent change - April 1, 2010 to July 1, 2013   
+  * Population, percent change - April 1, 2010 to July 1, 2014   
+
+Keep: Black or African American alone, percent, 2013__   
+  * Black-owned firms, percent, 2007   
+
+Keep:  Asian alone, percent, 2013
+  * Asian-owned firms, percent, 2007    
+
+Keep:  Native Hawaiian and Other Pacific Islander alone, percent, 2013     
+  * Two or More Races, percent, 2013   
+  * Native Hawaiian- and Other Pacific Islander-owned firms, percent, 2007   
+
+
+__C.__  The following groups of variables had a 80% correlation.   The variable at the top of the list is what was chosen to use for initial modeling.  
+
+Keep:  WTN220207  Merchant wholesaler sales   
+  * AFN120207  Accommodation and food services sales    
+  * BPS030213  Building permits   
+  * MAN450207  Manufacturers shipments  
+  * VET605213	Veterans    
+
+Keep:  RHI725213  Hispanic or Latino, percent, 2013  
+  * SBO415207	Hispanic-owned firms, percent, 2007  
+
+Keep:  RHI325213 American Indian and Alaska Native alone, percent, 2013     
+  * SBO115207	American Indian- and Alaska Native-owned firms, percent, 2007   
+
+Keep: POP815213  Language other than English spoken at home, pct age 5+, 2009-2013   
+* POP645213  Foreign born persons, percent, 2009-2013  
+
+Keep:  RHI525213  Native Hawaiian and Other Pacific Islander alone, percent, 2013   
+* RHI425213  Asian alone, percent, 2013  
+
+__D.__ The following variables were removed due to a low correlation with incarceration rate.
+
+
+```{r low.cor, echo=FALSE, results='asis'}
+
+low.cor  <- subset(CrmYrSt_wDemo,select= c(age135213,   age775213, 	hsd310213, 	hsg096213, 	hsg445213, 	hsg495213, 	inc910213, 	lfe305213, 	lnd110210, 	pop715213, 	pop815213, 	pst120213, 	rhi325213, 	rhi525213, 	rhi725213, 	sbo015207, 	sex255213, 	wtn220207))
+
+#names(low.cor)
+n <- as.data.frame(names(low.cor))
+names(n) <- "data_item.lower"
+n1 <- merge(n,qf_dd)[,c(1,3)]
+knitr::kable(n1)
+```
+Here are the correlation scores.   
+```{r CorIncrRtTable, echo=FALSE, results='asis'}
+knitr::kable(cor(CrmYrSt_wDemo$incrrt,low.cor[1:6]))
+knitr::kable(cor(CrmYrSt_wDemo$incrrt,low.cor[7:12]))
+knitr::kable(cor(CrmYrSt_wDemo$incrrt,low.cor[13:18]))
+
+```
+
+##Appendix 4:  Maps of Predicted vs Actualincarceration rates for 1980 and 2012.
+
+```{r}
+multiplot(actual_incr1980, actual_incr2012, pred_incr1980, pred_incr2012, cols=2)
+
+```
+
+##Appendix 5:  A few graphs and tables of total executions by state.
+
+
+The total executions by state between 1978 and 2012.  States not listed had 0 executions for all of those years.  
+```{r TotalExe, echo=FALSE, results='asis'}
+# execution rates distribution
+
+exe.all.yrs <- aggregate(CrmYrSt_wDemo$executions, by=list(CrmYrSt_wDemo$state), FUN=sum)
+names(exe.all.yrs) <- c("state","executions")
+exe.all.yrs <- exe.all.yrs[order(exe.all.yrs$executions,decreasing=TRUE ),]
+
+knitr::kable(exe.all.yrs[exe.all.yrs$executions>0,])
+```
+
+
+
+```{r map.of.execution.rates, echo=FALSE, eval=TRUE}
+
+exc34yr <- subset(CrmYrSt_wDemo,year %in% c(1978:2012),select=c(state.name.lower,executions,year))
+exec.total.34yr <- aggregate(exc34yr$executions, by=list(Category=exc34yr$state.name.lower), FUN=sum)
+names(exec.total.34yr) <-c("region","executions")
+
+#example(map_data)
+states <- map_data("state")
+choro_e <- merge(states, exec.total.34yr, sort = FALSE, by = "region")
+choro_e <- choro_e[order(choro_e$order), ]
+p_exe <- ggplot2::qplot(long, lat, data = choro_e, group = group, fill = executions,geom = "polygon",main="Total exections by state from 1978 to 2012")
+
+#set up a coloring scheme using colorRampPalette
+
+red=rgb(1,0,0); green=rgb(0,1,0); blue=rgb(0,0,1); white=rgb(1,1,1)
+
+GtoWrange<-colorRampPalette(c(green, white) )
+WtoRrange<-colorRampPalette(c(white, red ) )
+
+
+p_exe <- p_exe + scale_fill_gradient2(low=GtoWrange(100), mid=WtoRrange(100), midpoint=20, high="red")
+
+p_exe
+
+```
+
+
+```{r plot.exectn.by.yr, echo=FALSE}
+
+#executions by year
+ ggplot2::ggplot(data=CrmYrUS, aes(x=year, y=executions) )+
+ ggplot2::theme_bw() + 
+  ggplot2::theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black")
+        ) +
+    ggplot2::geom_point()+
+  ggplot2::stat_smooth(se=FALSE, method="loess") +
+  ggplot2::xlab("Year") +
+  ggplot2::ylab("Total # of Executions")+
+  ggplot2::ggtitle("Prisoners executed in the United States by year \n from 1978 to 2012")
+par(mfrow=c(1,1))
+
+```
